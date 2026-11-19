@@ -71,7 +71,27 @@ ChatGPT are kept locally.
    per minute, so a large history takes a while. Progress continues across
    runs.
 
-Check progress with `bin/chatgpt-sync status`.
+Check progress with `bin/chatgpt-sync status`. The toolbar popup and
+[local dashboard](http://127.0.0.1:8765/dashboard) show durable saved counts,
+last-known discovery coverage, last write time, and a 15m/1h/3h write chart.
+Older history is reconstructed from each indexed raw file's latest mtime;
+this cannot recover overwritten revisions and is labeled accordingly. New batch
+history is stored as bounded aggregate counters in `state_dir/progress.json`.
+Worker phase/counters are best-effort local telemetry, separate from confirmed
+archive writes. No titles, IDs, tokens or conversation content enter telemetry.
+
+ETA uses measured **new-chat** saves after at least 15 minutes, not fetch attempts
+or reconstructed revisions. A full saved inventory does not establish document,
+media, current-account or cloud-backup completion. Old-run errors are displayed in
+a separate disclosure, and disconnected/stale status is explicit. Dashboard reads
+do not trigger sync. The dashboard stays bound to loopback, has no archive browsing
+or remote scripts, and introduces no new extension permissions.
+
+After upgrading, restart the listener between batch writes. The installed
+extension picks up changed code at its next normal run through its existing
+self-reload; do not force reload an active backfill just to update the UI.
+An older active worker can keep saving while the dashboard shows those writes;
+its structured worker heartbeat appears only after that upgrade activates.
 
 ## Configuration
 

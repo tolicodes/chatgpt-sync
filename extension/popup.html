@@ -1,24 +1,11 @@
 <!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  body { font: 13px system-ui, sans-serif; width: 300px; margin: 12px; color: #222; }
-  h1 { font-size: 14px; margin: 0 0 8px; }
-  p { margin: 6px 0; }
-  .error { color: #c62828; overflow-wrap: anywhere; }
-  .muted { color: #666; }
-  button { margin-top: 8px; padding: 4px 12px; }
-  [hidden] { display: none; }
-</style>
-</head>
-<body>
-<h1>ChatGPT Sync</h1>
-<p id="state"></p>
-<p id="error" class="error" hidden></p>
-<p id="login" hidden><a href="https://chatgpt.com/" target="_blank">Log in to ChatGPT</a>, then sync again.</p>
-<p id="last" class="muted"></p>
-<button id="sync">Sync now</button>
-<script src="popup.js"></script>
-</body>
-</html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ChatGPT Sync · Progress</title><link rel="stylesheet" href="status.css"></head>
+<body><main>
+<header><div><span class="eyebrow">YOUR CONVERSATION ARCHIVE</span><h1>ChatGPT Sync</h1></div><a id="dashboard" href="http://127.0.0.1:8765/dashboard" target="_blank" rel="noopener">Open dashboard ↗</a></header>
+<section class="hero" aria-labelledby="progress-title"><div class="statusline"><span id="badge" class="badge">Connecting</span><span id="freshness">Checking local archive…</span></div><h2 id="progress-title"><span id="saved">—</span> <small>chats safely saved</small></h2><div class="track" id="track" role="progressbar" aria-label="Archive coverage"><div id="fill"></div></div><div class="progressmeta"><strong id="coverage">Waiting for archive counts</strong><span id="remaining">—</span></div><p id="inventory-note" class="muted"></p><p id="activity">Checking the local listener.</p></section>
+<div class="metrics"><section><span class="eyebrow">RECENT PACE</span><strong id="rate">—</strong><span id="rate-note">Observed durable writes / hour</span></section><section><span class="eyebrow">LAST SAVED</span><strong id="last-write">—</strong><span id="last-time">No observation yet</span></section><section><span class="eyebrow">ESTIMATED REMAINING</span><strong id="eta">Learning pace</strong><span id="eta-note">Needs 15 minutes of measured new saves</span></section></div>
+<section class="history"><div class="sectionhead"><div><h2>Is it moving?</h2><p class="muted" id="chart-summary">Durable writes, including updates</p></div><fieldset><legend class="sr-only">History window</legend><button type="button" data-window="900" aria-pressed="false">15m</button><button type="button" data-window="3600" aria-pressed="false">1h</button><button type="button" data-window="10800" aria-pressed="true">3h</button></fieldset></div><div class="chart" id="chart" role="img" aria-label="Write history loading"></div><div class="axis"><span id="chart-start">3 hours ago</span><span>Now</span></div><p id="history-note" class="footnote"></p></section>
+<section id="notice" class="notice" hidden><strong id="notice-title"></strong><p id="notice-body"></p></section>
+<details id="previous" hidden><summary>Previous run issue</summary><p id="previous-error"></p><p class="muted">This belongs to an earlier run. Current activity is shown above.</p></details>
+<footer><p id="coverage-note">Local archive progress. Full account coverage and Drive backup are separate checks.</p><div class="actions"><button id="refresh" type="button">Refresh status</button><button id="sync" type="button" hidden>Sync now</button></div><p id="connection" class="footnote" aria-live="polite"></p></footer>
+</main><script src="popup.js"></script></body></html>

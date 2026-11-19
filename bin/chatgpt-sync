@@ -87,7 +87,7 @@ LOCK = threading.Lock()
 # loaded; comparing it with the files on disk shows a stale extension, which
 # then reloads itself. Keep this list identical to CODE_FILES there.
 EXTENSION_DIR = os.path.join(REPO, "extension")
-EXTENSION_CODE_FILES = ["manifest.json", "background.js", "content.js", "popup.html", "popup.js"]
+EXTENSION_CODE_FILES = ["manifest.json", "background.js", "content.js", "popup.html", "popup.js", "status.css"]
 
 
 def extension_code_hash() -> str | None:
@@ -628,6 +628,78 @@ def documents_to_check(index: dict, docs: dict, now: float) -> dict:
     return out
 
 
+# ------------------------------------------------------- progress dashboard
+
+PROGRESS = os.path.join(STATE_DIR, "progress.json")
+INVENTORY = os.path.join(STATE_DIR, "inventory.json")
+
+
+def read_progress(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def progress_event(written, added, now=None, started_at=None):
+    """Keep bounded aggregate write history, never conversation content or IDs."""
+    now = time.time() if now is None else now
+    data = read_progress(PROGRESS, {})
+    events = [e for e in data.get("events", []) if e["at"] >= now - 24 * 3600]
+    events.append({"at": now, "written": written, "added": added})
+    data.update(events=events[-2500:], last_write=now if written else data.get("last_write"),
+                tracking_since=data.get("tracking_since", started_at if started_at is not None else now))
+    write_json(PROGRESS, data)
+
+
+def record_worker(payload, now=None):
+    """Accept only allowlisted numeric counters and phase labels from the extension."""
+    now = time.time() if now is None else now
+    data = read_progress(PROGRESS, {})
+    worker = {"at": now}
+    phases = {"checking", "discovery", "fetching", "waiting", "documents", "finishing", "idle", "failed"}
+    worker["phase"] = payload.get("phase") if payload.get("phase") in phases else "checking"
+    for key in ("listed", "total", "attempted", "fetched", "failed", "wait_seconds"):
+        value = payload.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 10000000:
+            worker[key] = int(value)
+    data["worker"] = worker
+    if worker.get("listed"):
+        write_json(INVENTORY, {"total": worker["listed"], "at": now, "source": "extension discovery"})
+    write_json(PROGRESS, data)
+
+
+def status_snapshot(now=None):
+    now = time.time() if now is None else now
+    index = load_index()
+    data = read_progress(PROGRESS, {})
+    inventory = read_progress(INVENTORY, {})
+    # A bounded, explicitly labeled reconstruction lets an existing archive show
+    # useful history immediately. A file's latest mtime cannot recover revisions.
+    since = data.get("tracking_since", now)
+    events = [dict(e, reconstructed=False) for e in data.get("events", []) if e["at"] >= now - 10800]
+    last_write = data.get("last_write")
+    for cid in index:
+        try:
+            at = os.path.getmtime(os.path.join(RAW, f"{cid}.json"))
+        except OSError:
+            continue
+        last_write = max(last_write or 0, at)
+        if now - 10800 <= at < since:
+            events.append({"at": at, "written": 1, "added": 0, "reconstructed": True})
+    worker = data.get("worker")
+    if worker:
+        worker = dict(worker, stale=now - worker["at"] > 180)
+    total = inventory.get("total")
+    return {"version": "0.7.2", "now": now, "saved": len(index), "inventory": inventory,
+            "remaining": max(total - len(index), 0) if total else None,
+            "last_write": last_write, "worker": worker, "paused": os.path.exists(PAUSED),
+            "tracking_since": since, "events": sorted(events, key=lambda e: e["at"]),
+            "history_note": "Older bars use each saved file’s latest write time; overwritten revisions are not recoverable. Live write tracking starts when this version is installed.",
+            "coverage_note": "Saved locally. Discovery, documents and Drive backup are separate checks."}
+
+
 # ------------------------------------------------------------------ store
 
 def ensure_data_repo() -> None:
@@ -734,6 +806,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -755,6 +828,30 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self):
+        route = urlsplit(self.path).path
+        assets = {"/": ("popup.html", "text/html"), "/dashboard": ("popup.html", "text/html"),
+                  "/popup.js": ("popup.js", "text/javascript"), "/status.css": ("status.css", "text/css")}
+        if route in assets or route == "/status":
+            if self.headers.get("Host") not in (f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"):
+                return self._reply(403, {"error": "local host required"})
+            origin = self.headers.get("Origin")
+            if origin not in (None, EXTENSION_ORIGIN, f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}"):
+                return self._reply(403, {"error": "forbidden origin"})
+            if route == "/status":
+                with LOCK:
+                    result = status_snapshot()
+                return self._reply(200, result)
+            name, mime = assets[route]
+            with open(os.path.join(EXTENSION_DIR, name), "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", mime + "; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' http://127.0.0.1:8765; frame-ancestors 'none'; base-uri 'none'")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/health":
             return self._reply(200, {"ok": True})
         if not self._authorized():
@@ -781,15 +878,28 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         length = int(self.headers.get("Content-Length") or 0)
+        if self.path == "/progress" and length > 4096:
+            return self._reply(413, {"error": "progress payload too large"})
         payload = json.loads(self.rfile.read(length) or b"{}")
         try:
+            if self.path == "/progress":
+                with LOCK:
+                    record_worker(payload)
+                return self._reply(200, {"ok": True})
             if self.path == "/conversations":
                 with LOCK:
+                    batch_started = time.time()
                     index = load_index()
+                    previous_ids = set(index)
                     docs = load_documents()
                     written = [conv_id(it["conversation"]) for it in payload["items"]
                                if store(it["conversation"], it.get("meta"), index, docs)]
                     save_index(index)
+                    # Only count successful durable index writes; duplicates add zero.
+                    try:
+                        progress_event(len(written), len(set(index) - previous_ids), started_at=batch_started)
+                    except OSError:
+                        self.log_message("aggregate progress history write failed")
                 return self._reply(200, {"written": len(written)})
             if self.path == "/documents":
                 with LOCK:

@@ -21,7 +21,7 @@ const VERSION = chrome.runtime.getManifest().version;
 
 // Hashed the same way by extension_code_hash() in bin/chatgpt-sync, which
 // reports the hash of these files on disk. Keep the two lists identical.
-const CODE_FILES = ["manifest.json", "background.js", "content.js", "popup.html", "popup.js"];
+const CODE_FILES = ["manifest.json", "background.js", "content.js", "popup.html", "popup.js", "status.css"];
 
 async function sha256hex(data) {
   const digest = await crypto.subtle.digest('SHA-256', data);
@@ -58,8 +58,16 @@ chrome.runtime.onInstalled.addListener(async () => {
 
 // Each stage write also refreshes the run's heartbeat and, being an extension
 // API call, keeps the service worker alive during long runs.
+let progressCounters = {};
 async function stage(name) {
   await set({run: {stage: name, heartbeat: Date.now()}});
+  const phase = name.startsWith('rate limited') ? 'waiting' : name.startsWith('fetching') ? 'fetching'
+    : name.includes('document') ? 'documents' : name.startsWith('finish') ? 'finishing'
+    : name.startsWith('list') ? 'discovery' : 'checking';
+  const wait = name.match(/\((\d+)s left\)/);
+  // Best effort aggregate telemetry. Never send tokens, IDs, titles or errors.
+  await server('POST', '/progress', {...progressCounters, phase,
+    wait_seconds: wait ? Number(wait[1]) : 0}).catch(() => {});
 }
 
 // Chrome stops a service worker after 30 s without extension events or API
@@ -148,6 +156,7 @@ async function listConversations(token) {
 async function runSync(force = []) {
   const errors = [];
   const summary = {listed: 0, fetched: 0, documents: 0};
+  progressCounters = {listed: 0, total: 0, attempted: 0, fetched: 0, failed: 0};
   let error = null;
   let errorKind = null;
   try {
@@ -182,6 +191,7 @@ async function runSync(force = []) {
     await stage('listing');
     const listing = await listConversations(token);
     summary.listed = listing.length;
+    progressCounters.listed = listing.length;
     await stage(`listed ${listing.length}`);
     // The listing's update_time can trail new messages for many minutes (seen
     // on a voice chat), so "Sync now" also refetches the chat open in the
@@ -190,15 +200,19 @@ async function runSync(force = []) {
     const todo = listing.filter((m) =>
       forced.has(m.id) || Date.parse(m.update_time) / 1000 > (ids[m.id] || 0) + 0.001);
     for (const id of forced) if (!listing.some((m) => m.id === id)) todo.push({id});
+    progressCounters.total = todo.length;
     let batch = [];
     for (const [i, meta] of todo.entries()) {
+      progressCounters.attempted = i + 1;
       await stage(`fetching ${i + 1}/${todo.length}`);
       if (i > 0) await sleep(FETCH_GAP_MS);
       try {
         batch.push({meta, conversation: await api(`/backend-api/conversation/${meta.id}`, token)});
         summary.fetched++;
+        progressCounters.fetched = summary.fetched;
       } catch (e) {
         errors.push(`${meta.id}: ${e.message}`);
+        progressCounters.failed = errors.length;
       }
       if (batch.length >= BATCH || i === todo.length - 1) {
         if (batch.length) await server('POST', '/conversations', {items: batch});
@@ -218,6 +232,7 @@ async function runSync(force = []) {
   }
   await set({lastFinished: Date.now(), lastSummary: summary, lastError: error,
              lastErrorKind: errorKind, run: null});
+  await server('POST', '/progress', {...progressCounters, phase: error ? 'failed' : 'idle'}).catch(() => {});
   await setBadge(error);
 }
 

@@ -376,6 +376,35 @@ class ListenerTests(unittest.TestCase):
             js = f.read()
         self.assertIn("const CODE_FILES = " + json.dumps(self.cs.EXTENSION_CODE_FILES) + ";", js)
 
+    def test_status_counts_durable_writes_and_does_not_leak_content(self):
+        conv = conversation(title="PRIVATE TITLE DO NOT EXPOSE")
+        self.request("POST", "/conversations", {"items": [{"conversation": conv}]})
+        self.request("POST", "/conversations", {"items": [{"conversation": conv}]})
+        status, result = self.request("GET", "/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(sum(e["written"] for e in result["events"]), 1)
+        self.assertEqual(sum(e["added"] for e in result["events"]), 1)
+        self.assertNotIn("PRIVATE TITLE", json.dumps(result))
+        self.assertNotIn(conv["conversation_id"], json.dumps(result))
+
+    def test_worker_progress_is_allowlisted_and_separate_from_archive(self):
+        self.request("POST", "/progress", {"phase": "fetching", "listed": 100,
+            "attempted": 70, "fetched": 69, "token": "PRIVATE", "title": "PRIVATE"})
+        _, result = self.request("GET", "/status")
+        self.assertEqual(result["saved"], 0)
+        self.assertEqual(result["remaining"], 100)
+        self.assertEqual(result["worker"]["attempted"], 70)
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertEqual(self.request("POST", "/progress", {"phase":"idle"}, origin="https://evil.example")[0], 403)
+
+    def test_status_is_available_while_paused(self):
+        open(self.cs.PAUSED, "w").close()
+        status, result = self.request("GET", "/status")
+        self.assertEqual(status, 200)
+        self.assertTrue(result["paused"])
+        self.assertEqual(self.request("GET", "/status", origin="https://evil.example")[0], 403)
+
     def test_pause_file_refuses_requests(self):
         open(self.cs.PAUSED, "w").close()
         self.assertEqual(self.request("GET", "/state")[0], 503)
